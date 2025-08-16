@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="sr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Status ordinacije</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { background:#000; color:#fff; font-family: system-ui, Arial, sans-serif; margin:0; text-align:center; padding:20px; }
+  .status-img { display:block; width:250px; margin:20px auto; animation:swing 2s ease-in-out infinite; }
+  h1 { margin:10px 0; font-size:22px; }
+  p { margin:0; font-size:16px; opacity:.95; }
+  .topbar { display:flex; justify-content:space-between; align-items:center; gap:10px; max-width:980px; margin:0 auto 6px; }
+  .admin-link { color:#4ade80; cursor:pointer; text-decoration:underline; font-weight:700; }
+  @keyframes swing { 0%{transform:rotate(-5deg);} 50%{transform:rotate(5deg);} 100%{transform:rotate(-5deg);} }
+
+  .modal { position:fixed; inset:0; display:none; place-items:center; background:rgba(0,0,0,.55); padding:20px; }
+  .modal.open { display:grid; }
+  .card { width:min(100%, 700px); background:#111; border:1px solid #333; border-radius:14px; padding:16px; text-align:left; }
+  .row { display:flex; gap:10px; align-items:center; margin:8px 0; flex-wrap:wrap; }
+  label { font-size:14px; }
+  input[type="date"], input[type="time"] {
+    background:#000; color:#fff; border:1px solid #444; border-radius:8px; padding:8px 10px;
+  }
+  input[type="checkbox"] { transform:scale(1.2); }
+  .btn { background:#4ade80; color:#000; border:none; border-radius:10px; padding:10px 14px; font-weight:800; cursor:pointer; }
+  .btn.secondary { background:#222; color:#fff; border:1px solid #444; }
+  .muted { opacity:.75; font-size:13px; }
+  table { width:100%; border-collapse:collapse; margin-top:10px; }
+  th, td { padding:8px; border-bottom:1px solid #333; font-size:14px; }
+  th { text-align:left; opacity:.8; }
+  .chip { display:inline-block; padding:2px 8px; border-radius:999px; background:#222; border:1px solid #333; font-size:12px; }
+  .danger { background:#b91c1c; color:#fff; }
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <span></span>
+    <a class="admin-link" id="openAdmin">⚙️ Admin</a>
+  </div>
+
+  <img id="statusImg" class="status-img" src="close.png" alt="Status ordinacije" />
+  <h1 id="statusText">Ordinacija je zatvorena.</h1>
+  <p id="workHours"></p>
+
+  <!-- ADMIN MODAL (bez unosa šifre – koristi ugrađenu vrijednost) -->
+  <div class="modal" id="adminModal" aria-hidden="true">
+    <div class="card">
+      <div class="row" style="justify-content:space-between;">
+        <h2>Podesi radno vrijeme</h2>
+        <button class="btn secondary" id="closeModal">Zatvori</button>
+      </div>
+
+      <p class="muted">Napomena: admin ključ je ugrađen u ovu stranicu (vidljiv u izvoru).</p>
+
+      <div class="row">
+        <label for="dateInput" style="min-width:110px;">Datum:</label>
+        <input type="date" id="dateInput" />
+      </div>
+
+      <div class="row">
+        <label><input type="checkbox" id="closedCheckbox" /> Neradni dan</label>
+      </div>
+
+      <div id="timeRow" class="row">
+        <label for="startTime" style="min-width:110px;">Od:</label>
+        <input type="time" id="startTime" value="10:00" />
+        <label for="endTime" style="min-width:60px;">Do:</label>
+        <input type="time" id="endTime" value="20:00" />
+      </div>
+
+      <div class="row">
+        <button class="btn" id="saveOverride">Sačuvaj izuzetak</button>
+        <button class="btn secondary" id="deleteOverride">Obriši izuzetak</button>
+      </div>
+
+      <h3>Sačuvani izuzeci</h3>
+      <table id="overridesTable">
+        <thead>
+          <tr>
+            <th>Datum</th>
+            <th>Status</th>
+            <th>Detalj</th>
+            <th>Akcija</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+
+    </div>
+  </div>
+
+<script>
+  /* ===== KONFIG: Ugrađeni admin ključ (PROMIJENI OVDJE) ===== */
+  const EMBEDDED_ADMIN_KEY = "1234"; // ← promijeni po želji
+
+  /* ===== API (fallback: /api -> /.netlify/functions) ===== */
+  const API_BASES = ["/api/overrides", "/.netlify/functions/overrides"];
+  async function apiGetOverrides(date) {
+    const qs = date ? `?date=${encodeURIComponent(date)}` : "";
+    for (const base of API_BASES) {
+      try { const r = await fetch(base + qs); if (r.ok) return r.json(); } catch(_){}
+    }
+    return {};
+  }
+  async function apiSaveOverride(payload) {
+    for (const base of API_BASES) {
+      try {
+        const r = await fetch(base, {
+          method:"POST",
+          headers:{ "Content-Type":"application/json", "x-admin-key": EMBEDDED_ADMIN_KEY },
+          body: JSON.stringify(payload)
+        });
+        if (r.ok) return r.json();
+        if (r.status===401) return { error:"Unauthorized (NETLIFY_ADMIN_KEY ≠ EMBEDDED_ADMIN_KEY)" };
+      } catch(_){}
+    }
+    return { error: "API nedostupan" };
+  }
+  async function apiDeleteOverride(date) {
+    const qs = `?date=${encodeURIComponent(date)}`;
+    for (const base of API_BASES) {
+      try {
+        const r = await fetch(base + qs, {
+          method:"DELETE",
+          headers:{ "x-admin-key": EMBEDDED_ADMIN_KEY }
+        });
+        if (r.ok) return r.json();
+        if (r.status===401) return { error:"Unauthorized (NETLIFY_ADMIN_KEY ≠ EMBEDDED_ADMIN_KEY)" };
+      } catch(_){}
+    }
+    return { error: "API nedostupan" };
+  }
+
+  /* ===== UTIL (lokalni datumi, bez TZ bug-a) ===== */
+  const $ = (sel) => document.querySelector(sel);
+  function fmtDateISO(d){ const y=d.getFullYear(); const m=String(d.getMonth()+1).padStart(2,"0"); const day=String(d.getDate()).padStart(2,"0"); return `${y}-${m}-${day}`; }
+  function dayOfWeekISO(iso){ const [y,m,d]=iso.split("-").map(Number); return new Date(y,m-1,d).getDay(); } // 0=ned,6=sub
+  function minOf(hhmm){ const [h,m]=hhmm.split(":").map(Number); return h*60+m; }
+  function standardHoursForDay(d){ if(d>=1&&d<=5) return {closed:false,start:"10:00",end:"20:00"}; if(d===6) return {closed:false,start:"10:00",end:"14:00"}; return {closed:true}; }
+
+  /* ===== STATE ===== */
+  let overrides = {}; // {"YYYY-MM-DD":{closed,start?,end?}}
+
+  /* ===== STATUS PRIKAZ ===== */
+  async function loadOverrides(){ overrides = await apiGetOverrides(); refreshOverridesTable(); }
+  async function renderStatus(){
+    const now = new Date();
+    const dateISO = fmtDateISO(now);
+    const dow = now.getDay();
+    const plan = overrides?.[dateISO] ?? standardHoursForDay(dow);
+
+    const img = $("#statusImg"), txt=$("#statusText"), wh=$("#workHours");
+
+    if (plan.closed) {
+      img.src = "close.png"; txt.textContent = (dow===0) ? "Neradni dan (nedjelja)." : "Neradni dan."; wh.textContent = "Ordinacija je zatvorena."; return;
+    }
+    const nowMin = now.getHours()*60 + now.getMinutes();
+    const open = nowMin >= minOf(plan.start) && nowMin < minOf(plan.end);
+    img.src = open ? "open.png" : "close.png";
+    txt.textContent = open ? "Ordinacija je otvorena." : "Ordinacija je zatvorena.";
+    wh.textContent = `Radno vrijeme od ${plan.start} do ${plan.end} časova.`;
+  }
+
+  /* ===== ADMIN UI ===== */
+  const adminModal=$("#adminModal"), overridesTable=$("#overridesTable tbody");
+
+  $("#openAdmin").addEventListener("click", async () => {
+    adminModal.classList.add("open"); adminModal.setAttribute("aria-hidden","false");
+    if (!$("#dateInput").value) $("#dateInput").value = fmtDateISO(new Date());
+    await preloadForSelectedDate();
+  });
+  $("#closeModal").addEventListener("click", () => {
+    adminModal.classList.remove("open"); adminModal.setAttribute("aria-hidden","true");
+  });
+  adminModal.addEventListener("click", (e)=>{ if (e.target===adminModal) $("#closeModal").click(); });
+
+  async function preloadForSelectedDate(){
+    const iso = $("#dateInput").value; if(!iso) return;
+    const dow = dayOfWeekISO(iso);
+    const base = (await apiGetOverrides(iso)) ?? standardHoursForDay(dow);
+    $("#closedCheckbox").checked = !!base.closed;
+    $("#timeRow").style.display = base.closed ? "none" : "flex";
+    if (!base.closed) {
+      $("#startTime").value = base.start || "10:00";
+      $("#endTime").value   = base.end   || (dow===6 ? "14:00" : "20:00");
+    }
+  }
+  $("#dateInput").addEventListener("change", preloadForSelectedDate);
+  $("#closedCheckbox").addEventListener("change", ()=>{ $("#timeRow").style.display = $("#closedCheckbox").checked ? "none" : "flex"; });
+
+  function saturdayConfirmIfNeeded(iso, start, end){
+    const dow = dayOfWeekISO(iso);
+    if (dow !== 6) return true;
+    if (start==="10:00" && end==="14:00") return true;
+    return confirm("Subota je standardno 10–14h. Želite li ipak sačuvati uneseni opseg?");
+  }
+
+  $("#saveOverride").addEventListener("click", async ()=>{
+    const iso = $("#dateInput").value; if(!iso) return alert("Izaberi datum.");
+    const closed = $("#closedCheckbox").checked;
+    const payload = { date: iso, closed };
+    if (!closed) {
+      const start=$("#startTime").value, end=$("#endTime").value;
+      if (!start || !end) return alert("Unesi i početak i kraj.");
+      if (minOf(end) <= minOf(start)) return alert("Vrijeme završetka mora biti posle početka.");
+      if (!saturdayConfirmIfNeeded(iso, start, end)) return;
+      payload.start=start; payload.end=end;
+    }
+    const res = await apiSaveOverride(payload);
+    if (res?.error) return alert(res.error);
+    alert("Sačuvano.");
+    await loadOverrides(); await preloadForSelectedDate(); await renderStatus();
+  });
+
+  $("#deleteOverride").addEventListener("click", async ()=>{
+    const iso = $("#dateInput").value; if(!iso) return;
+    if (!confirm("Obrisati izuzetak za " + iso + "?")) return;
+    const res = await apiDeleteOverride(iso);
+    if (res?.error) return alert(res.error);
+    alert("Izuzetak obrisan.");
+    await loadOverrides(); await preloadForSelectedDate(); await renderStatus();
+  });
+
+  function refreshOverridesTable(){
+    overridesTable.innerHTML = "";
+    const entries = Object.entries(overrides || {}).sort(([a],[b]) => a.localeCompare(b));
+    if (entries.length === 0) {
+      const tr=document.createElement("tr"); const td=document.createElement("td");
+      td.colSpan=4; td.className="muted"; td.textContent="Nema sačuvanih izuzetaka."; tr.appendChild(td);
+      overridesTable.appendChild(tr); return;
+    }
+    for (const [date, val] of entries) {
+      const tr=document.createElement("tr");
+      const tdDate=document.createElement("td"); tdDate.textContent=date;
+      const tdStatus=document.createElement("td"); tdStatus.innerHTML = val?.closed ? '<span class="chip">Neradni</span>' : '<span class="chip">Radi</span>';
+      const tdDetail=document.createElement("td"); tdDetail.textContent = val?.closed ? "—" : `${val.start}–${val.end}`;
+      const tdAct=document.createElement("td");
+      const btn=document.createElement("button"); btn.className="btn danger"; btn.textContent="🗑 Obriši";
+      btn.addEventListener("click", async ()=>{
+        if (!confirm("Obrisati izuzetak za " + date + "?")) return;
+        const res = await apiDeleteOverride(date);
+        if (res?.error) return alert(res.error);
+        await loadOverrides(); await renderStatus();
+      });
+      tdAct.appendChild(btn);
+      tr.append(tdDate, tdStatus, tdDetail, tdAct);
+      overridesTable.appendChild(tr);
+    }
+  }
+
+  // Init
+  (async () => {
+    $("#dateInput").value = fmtDateISO(new Date());
+    await loadOverrides();
+    await renderStatus();
+    setInterval(renderStatus, 60000);
+  })();
+</script>
+</body>
+</html>
